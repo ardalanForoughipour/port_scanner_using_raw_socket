@@ -6,6 +6,7 @@ import select
 import sys
 import binascii
 import netifaces
+import os
 
 
 ICMP_ECHO_REPLY_TYPE = 0
@@ -259,6 +260,7 @@ def send_raw_tcp_packet(raw_socket,user_data_bytes,packet_id,src_ip,dest_ip,src_
 
     raw_socket.sendto(packet, (dest_ip, 0))
 
+
 def convert_flags_bit_to_string_list(flags: int):
     flags_bits_str = "{0:b}".format(flags)
     while len(flags_bits_str) < 6:
@@ -330,7 +332,7 @@ def receive_tcp_response(my_socket, request_src_port, request_sequence, time_sen
             return None
 
 
-def do_tcp_syn_scan(dest_ip:str, dest_port:int, timeout=3, data=''):
+def do_tcp_syn_scan(dest_ip: str, dest_port: int, timeout=3, data=''):
     # Creating our raw socket
     try:
         raw_socket = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_TCP)
@@ -353,6 +355,7 @@ def do_tcp_syn_scan(dest_ip:str, dest_port:int, timeout=3, data=''):
     sequence_number = 0
     send_raw_tcp_packet(raw_socket, data_bytes, 0, src_ip, dest_ip, src_port, dest_port, sequence_number, 0, 0, 1, 0, 0, 0, 0, 0, options_bytes)
     tcp_header_info = receive_tcp_response(raw_socket, src_port, sequence_number, time.time(), timeout)
+
     if tcp_header_info is None:
         status = "CLOSED_OR_FILTERED"
     else:
@@ -378,12 +381,16 @@ def do_tcp_connection_scan(dest_ip: str, dest_port: int, timeout=300, data=''):
 
     src_ip = get_src_ip_connected_to_dest_ip(dest_ip)
     src_port = random.randint(2048, 65535)
-    print("@@@",src_port)
 
     # mtu size
     options_bytes = binascii.a2b_hex("020405b4")
     # data
     data_bytes = bytearray(data, 'ascii')
+
+    ip_tables_command_add_drop_rule = "iptables -A OUTPUT -p tcp --tcp-flags RST RST -s " + src_ip + " -d " + dest_ip +" --dport " + str(dest_port) + " -j DROP"
+    ip_tables_command_remove_drop_rule = "iptables -D OUTPUT -p tcp --tcp-flags RST RST -s " + src_ip + " -d " + dest_ip + " --dport " + str(dest_port) + " -j DROP"
+
+    os.system(ip_tables_command_add_drop_rule)
 
     # send a tcp packet to start a connection with setting the SYN flag to 1
     sequence_number = 0
@@ -392,6 +399,7 @@ def do_tcp_connection_scan(dest_ip: str, dest_port: int, timeout=300, data=''):
     response_tcp_header_info = receive_tcp_response(raw_socket, src_port, sequence_number, time.time(), timeout)
     if response_tcp_header_info is None:
         raw_socket.close()
+        os.system(ip_tables_command_remove_drop_rule)
         return {"response tcp header": None, "status": "CLOSED_OR_FILTERED"}
 
     response_flags = response_tcp_header_info["flags"]
@@ -407,14 +415,12 @@ def do_tcp_connection_scan(dest_ip: str, dest_port: int, timeout=300, data=''):
     ack_sequence_number = response_sequence_number + 1
 
 
-    send_raw_tcp_packet(raw_socket, data_bytes, 0, src_ip, dest_ip, src_port, dest_port, sequence_number,
-                        ack_sequence_number, 0, 0, 0, 0, 1, 0, 0, options_bytes)
+    send_raw_tcp_packet(raw_socket, data_bytes, 0, src_ip, dest_ip, src_port, dest_port, sequence_number, ack_sequence_number, 0, 0, 0, 0, 1, 0, 0, options_bytes)
 
-    send_raw_tcp_packet(raw_socket, data_bytes, 0, src_ip, dest_ip, src_port, dest_port, sequence_number,
-                        ack_sequence_number, 0, 0, 1, 0, 1, 0, 0, options_bytes)
+    send_raw_tcp_packet(raw_socket, data_bytes, 0, src_ip, dest_ip, src_port, dest_port, sequence_number, ack_sequence_number, 0, 0, 1, 0, 1, 0, 0, options_bytes)
     raw_socket.close()
+    os.system(ip_tables_command_remove_drop_rule)
     return {"response tcp header": response_tcp_header_info, "status": status}
-
 
 
 
@@ -422,7 +428,7 @@ def do_tcp_connection_scan(dest_ip: str, dest_port: int, timeout=300, data=''):
 # This implementation uses the normal socket, but I replaced it with using a raw socket so that
 # the same information possible can be logged from every scan
 ###
-def do_tcp_connection_scan2(dest_ip: str, dest_port: int, close_connection_with_RST_flag=True, timeout=5):
+def do_tcp_connection_scan_no_raw_socket(dest_ip: str, dest_port: int, close_connection_with_RST_flag=True, timeout=5):
     # Creating our socket
     try:
         conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -468,51 +474,42 @@ def do_tcp_connection_scan2(dest_ip: str, dest_port: int, close_connection_with_
     except socket.timeout as e:
         print('TCP_CONNECTION_SCAN : time out from ' + dest_ip + ':' + str(dest_port) +" with Eception : " + str(e))
         conn.close()
-        return {"return code": None, "status": "CLOSED_OR_FILTERED"}
+        return {"return code": None, "status": "TIMEOUT_CLOSED_OR_FILTERED"}
 
 
-#
-# UDP_sig = {
-#     "scanner_payload" : bytearray("hello there!",'ascii'),
-#     "dns"		: b"\x24\x1a\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x03\x77\x77\x77\x06\x67\x6f\x6f\x67\x6c\x65\x03\x63\x6f\x6d\x00\x00\x01\x00\x01",
-#     "snmp"		: b"\x30\x2c\x02\x01\x00\x04\x07\x70\x75\x62\x6c\x69\x63\xA0\x1E\x02\x01\x01\x02\x01\x00\x02\x01\x00\x30\x13\x30\x11\x06\x0D\x2B\x06\x01\x04\x01\x94\x78\x01\x02\x07\x03\x02\x00\x05\x00",
-#     "ntp"		: b"\xe3\x00\x04\xfa\x00\x01\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xc5\x4f\x23\x4b\x71\xb1\x52\xf3"
-# }
-#
-#
-# def do_udp_scan(dest_ip,dest_port,payload=None,timeout = 1):
-#     target, port = (str(dest_ip), int(dest_port))
-#     try:
-#         conn = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-#         conn.settimeout(timeout)
-#     except :
-#
-#         raise
-#     try:
-#         if payload:
-#             conn.sendto(bytearray(payload,'ascii'), (target, port))
-#         else:
-#             if (port == 123):
-#                 conn.sendto(UDP_sig["ntp"], (target, port))
-#             elif (port == 53):
-#                 conn.sendto(UDP_sig["dns"], (target, port))
-#             elif (port == 161):
-#                 conn.sendto(UDP_sig["snmp"], (target, port))
-#             else:
-#                 conn.sendto(UDP_sig["scanner_payload"], (target, port))
-#
-#         d = conn.recv(1024)
-#
-#         if (len(d) > 0):
-#             conn.close()
-#             return d,OPEN
-#         conn.close()
-#         return None,CLOSED_OR_FILTERED
-#     except socket.timeout:
-#         conn.close()
-#         return None,CLOSED_OR_FILTERED
+def do_udp_scan_no_raw_socket(dest_ip: str, dest_port: int, payload=None, timeout=1):
+    default_UDP_payload = {
+        "dns"	: b"\x24\x1a\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x03\x77\x77\x77\x06\x67\x6f\x6f\x67\x6c\x65\x03\x63\x6f\x6d\x00\x00\x01\x00\x01",
+        "snmp"		: b"\x30\x2c\x02\x01\x00\x04\x07\x70\x75\x62\x6c\x69\x63\xA0\x1E\x02\x01\x01\x02\x01\x00\x02\x01\x00\x30\x13\x30\x11\x06\x0D\x2B\x06\x01\x04\x01\x94\x78\x01\x02\x07\x03\x02\x00\x05\x00",
+        "ntp"		: b"\xe3\x00\x04\xfa\x00\x01\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xc5\x4f\x23\x4b\x71\xb1\x52\xf3"
+    }
 
-ip = sys.argv[1]
-port = sys.argv[2]
-a = do_tcp_connection_scan(ip, int(port))
-print(a)
+    try:
+        conn = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        conn.settimeout(timeout)
+    except :
+        raise print('Exception in initializing socket for UDP connection scanning for ' + dest_ip + ':' + str(dest_port) + " , error : " + str(e))
+
+    try:
+        if payload:
+            conn.sendto(bytearray(payload,'ascii'), (dest_ip, dest_port))
+        else:
+            if dest_port == 123:
+                conn.sendto(default_UDP_payload["ntp"], (dest_ip, dest_port))
+            elif dest_port == 53:
+                conn.sendto(default_UDP_payload["dns"], (dest_ip, dest_port))
+            elif dest_port == 161:
+                conn.sendto(default_UDP_payload["snmp"], (dest_ip, dest_port))
+            else:
+                conn.sendto(default_UDP_payload["scanner_payload"], (dest_ip, dest_port))
+
+        d = conn.recv(1024)
+        if len(d) > 0:
+            conn.close()
+            return {"return payload": d, "status": "OPEN"}
+
+        conn.close()
+        return {"return payload": None, "status": "CLOSED_OR_FILETERED"}
+    except socket.timeout:
+        conn.close()
+        return {"return payload": None, "status": "TIMEOUT_CLOSED_OR_FILETERED"}
